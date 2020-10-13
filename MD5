@@ -1,6 +1,6 @@
-c48f61b5abb579f73d6c3c303eafa070 *DESCRIPTION
+8075b482bd22af9876c5b849857acf37 *DESCRIPTION
 9c9aefac9a52435dbd3fc61148096e0d *NAMESPACE
-ce5f9451f134b98920c67e3fb542b0c3 *NEWS.md
+58968d22abad2aec7c216763e35d6cf3 *NEWS.md
 1cc86795a84f0c82a8d1f3857cbef613 *R/agtboost-package.R
 2b28fdbfb0df457eadfd791ccd374a69 *R/caravan_data.R
 32948f1491574ce96dcb8a30d269f13a *R/gbt.convergence.R
@@ -27,11 +27,11 @@ e00702a17d34adb35f67274717d1b7de *inst/include/cir.hpp
 1ccb95b749ed9314a7ca07173f7dc2dd *inst/include/ensemble.hpp
 a0429187105e7bf48f52cd1007a67759 *inst/include/external_rcpp.hpp
 f73fdc3ede825e134257c61519ef0c7a *inst/include/gbt_count_auto.hpp
-0b72d72bde793ca632f17e345bc2925f *inst/include/gumbel.hpp
+8c1963c6ed51a787f482ba14913f8a9b *inst/include/gumbel.hpp
 c69e297398785da51cf6cd5804a75350 *inst/include/loss_functions.hpp
-874a1cc8c27af13d97c93274527e346a *inst/include/node.hpp
+d110f1b3a02c8ed02fae55eacf5201ca *inst/include/node.hpp
 916d7a8b2d773aa43918807ce3f214ba *inst/include/optimization.hpp
-cb18815054954fc7f62f392a35556ef1 *inst/include/tree.hpp
+a3fc7364c37ad9cf4d20828f91b65e3a *inst/include/tree.hpp
 d6fc28fc8887c5ef8b64982b7c39df41 *man/agtboost.Rd
 396a9c25b326bb52a7ecf85002a721e0 *man/caravan.train.Rd
 2e097afb5946f6fbd6e5ce2723d90012 *man/gbt.convergence.Rd

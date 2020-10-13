@@ -1,8 +1,8 @@
 Package: agtboost
 Type: Package
 Title: Adaptive and Automatic Gradient Boosting Computations
-Version: 0.9.0
-Date: 2020-08-24
+Version: 0.9.1
+Date: 2020-09-06
 Author: Berent Ånund Strømnes Lunde
 Maintainer: Berent Ånund Strømnes Lunde <lundeberent@gmail.com>
 Description: Fast and automatic gradient tree boosting designed
@@ -22,6 +22,6 @@ RcppModules: aGTBModule
 RoxygenNote: 6.1.1
 Suggests: testthat
 NeedsCompilation: yes
-Packaged: 2020-08-26 11:47:35 UTC; lunde
+Packaged: 2020-10-04 16:29:20 UTC; lunde
 Repository: CRAN
-Date/Publication: 2020-09-01 14:00:03 UTC
+Date/Publication: 2020-10-13 23:50:34 UTC
