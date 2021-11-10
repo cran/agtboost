@@ -31,9 +31,11 @@ public:
     int getNumLeaves();
     void print_tree(int type);
     void serialize(GBTREE* tptr, std::ofstream& f);
-    bool deSerialize(GBTREE* tptr,  std::ifstream& f, int& lineNum);
+    bool deSerialize(GBTREE* tptr,  std::ifstream& f);
     void importance(Tvec<double> &importance_vector, double learning_rate);
-    
+    int get_tree_depth();
+    double get_tree_max_optimism();
+    double get_tree_min_hess_sum();
 };
 
 
@@ -55,38 +57,17 @@ void GBTREE::serialize(GBTREE *tptr, std::ofstream& f)
     serialize(tptr->next_tree, f);
 }
 
-bool GBTREE::deSerialize(GBTREE *tptr, std::ifstream& f, int& lineNum)
+bool GBTREE::deSerialize(GBTREE *tptr, std::ifstream& f)
 {
-    
-    int MARKER = -1;
-    
-    // Start at beginning
-    f.seekg(0, std::ios::beg);
-    
-    // Run until line lineNum is found
-    std::string stemp;
-    for(int i=0; i<= lineNum; i++)
-    {
-        if(!std::getline(f,stemp)){
-            tptr = NULL;
-            return false;
-        }
-    }
-    
-    // Check stemp for MARKER
-    std::istringstream istemp(stemp);
-    int val;
-    istemp >> val;
-    if(val == MARKER){ 
+    tptr->root = new node;
+    const bool success = tptr->root->deSerialize(tptr->root, f);
+    if (!success) {
         tptr = NULL;
         return false;
     }
 
-    // If not MARKER, deserialize root node (unincremented lineNum)
-    tptr->root = new node;
-    tptr->root->deSerialize(tptr->root, f, lineNum); // lineNum passed by reference and incremented
     GBTREE* new_tree = new GBTREE;
-    bool new_tree_exist = deSerialize(new_tree, f, lineNum);
+    bool new_tree_exist = deSerialize(new_tree, f);
     if(new_tree_exist)
     {
         tptr->next_tree = new_tree;
@@ -126,7 +107,7 @@ void GBTREE::train(Tvec<double> &g, Tvec<double> &h, Tmat<double> &X, Tmat<doubl
         double local_optimism = (G2 - 2.0*gxh*(G/H) + G*G*H2/(H*H)) / (H*n);
         
         node* root_ptr = new node;
-        root_ptr->createLeaf(-G/H, -G*G/(2*H*n), local_optimism, local_optimism, n, n, n);
+        root_ptr->createLeaf(-G/H, -G*G/(2*H*n), local_optimism, local_optimism, n, n, n, G, H);
         root = root_ptr;
         //root = root->createLeaf(-G/H, -G*G/(2*H*n), local_optimism, local_optimism, n, n, n);
     }
@@ -406,6 +387,137 @@ int GBTREE::getNumLeaves(){
     } /* End of while */
             
     return numLeaves;
+}
+
+int max_depth_subtree(node* node)
+{
+    if (node == NULL)
+        return 0;
+    else
+    {
+        /* compute the depth of each subtree */
+        int lDepth = max_depth_subtree(node->left);
+        int rDepth = max_depth_subtree(node->right);
+        
+        /* use the larger one */
+        if (lDepth > rDepth)
+            return(lDepth + 1);
+        else return(rDepth + 1);
+    }
+}
+
+int GBTREE::get_tree_depth(){
+    // Compute depth for root-subtree
+    return max_depth_subtree(this->root);
+}
+
+double GBTREE::get_tree_max_optimism(){
+    double max_optimism = 0.0;
+    double node_optimism;
+    node* current = this->root;
+    node* pre;
+    
+    if(current == NULL){
+        return 0.0;
+    }
+    
+    while (current != NULL) { 
+        
+        if (current->left == NULL) { 
+            //std::cout <<  current->node_prediction << std::endl; 
+            //conditional_opt_leaves += current->local_optimism * current->prob_node;
+            current = current->right; 
+        } 
+        else { 
+            
+            /* Find the inorder predecessor of current */
+            pre = current->left; 
+            while (pre->right != NULL && pre->right != current) 
+                pre = pre->right; 
+            
+            /* Make current as right child of its inorder 
+             predecessor */
+            if (pre->right == NULL) { 
+                pre->right = current; 
+                current = current->left; 
+            } 
+            
+            /* Revert the changes made in if part to restore 
+             the original tree i.e., fix the right child 
+             of predecssor */
+            else { 
+                pre->right = NULL; 
+                node_optimism = current->CRt; // current->split_point_optimism;
+                if(node_optimism > max_optimism){
+                    max_optimism = node_optimism;
+                }
+                current = current->right; 
+            } /* End of if condition pre->right == NULL */
+        } /* End of if condition current->left == NULL*/
+    } /* End of while */
+    return max_optimism;
+}
+
+double GBTREE::get_tree_min_hess_sum(){
+    double min_hess_sum_in_node = R_PosInf;
+    double node_hess_sum;
+    node* current = this->root;
+    node* pre;
+    
+    if(current == NULL){
+        return 0.0;
+    }
+    
+    while (current != NULL) { 
+        
+        if (current->left == NULL) { 
+            // leaf
+            node_hess_sum = current->h_sum_in_node; // current->split_point_optimism;
+            if(node_hess_sum < min_hess_sum_in_node){
+                min_hess_sum_in_node = node_hess_sum;
+            }
+            current = current->right; 
+        } 
+        else { 
+            
+            /* Find the inorder predecessor of current */
+            pre = current->left; 
+            while (pre->right != NULL && pre->right != current) 
+                pre = pre->right; 
+            
+            /* Make current as right child of its inorder 
+             predecessor */
+            if (pre->right == NULL) { 
+                pre->right = current; 
+                current = current->left; 
+            } 
+            
+            /* Revert the changes made in if part to restore 
+             the original tree i.e., fix the right child 
+             of predecssor */
+            else { 
+                // Internal node
+                pre->right = NULL; 
+                node_hess_sum = current->h_sum_in_node; // current->split_point_optimism;
+                if(node_hess_sum < min_hess_sum_in_node){
+                    min_hess_sum_in_node = node_hess_sum;
+                }
+                current = current->right; 
+            } /* End of if condition pre->right == NULL */
+        } /* End of if condition current->left == NULL*/
+    } /* End of while */
+    return min_hess_sum_in_node;
+}
+
+
+double tree_expected_test_reduction(GBTREE* tree, double learning_rate){
+    // This employs the gb-approximation to the loss
+    double train_loss_reduction = tree->getTreeScore();
+    double optimism = tree->getTreeOptimism();
+    double scaled_expected_test_reduction = 
+        (-2.0) * learning_rate*(learning_rate/2.0 - 1.0) * train_loss_reduction + // Scaled observed training loss
+        learning_rate * optimism;
+    return scaled_expected_test_reduction;
 }
 
 

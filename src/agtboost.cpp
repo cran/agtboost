@@ -7,8 +7,6 @@
 
 #include "agtboost.hpp"
 
-
-
 // ---------------- ENSEMBLE ----------------
 ENSEMBLE::ENSEMBLE(){
     this->first_tree = NULL;
@@ -68,12 +66,10 @@ void ENSEMBLE::serialize(ENSEMBLE *eptr, std::ofstream& f)
     
     eptr->first_tree->serialize(eptr->first_tree, f);
     f.close();
-    
 }
 
 void ENSEMBLE::deSerialize(ENSEMBLE *eptr, std::ifstream& f)
 {
-    
     // Check stream
     std::streampos oldpos = f.tellg();
     int val;
@@ -85,13 +81,10 @@ void ENSEMBLE::deSerialize(ENSEMBLE *eptr, std::ifstream& f)
     
     // Read from stream
     f >> eptr->nrounds >> eptr->learning_rate >> eptr->extra_param >>
-        eptr->initialPred >> eptr->initial_score >> eptr->loss_function;
-    
-    // Start recurrence
-    int lineNum = 6;
+        eptr->initialPred >> eptr->initial_score >> eptr->loss_function >> std::ws;
+
     eptr->first_tree = new GBTREE;
-    eptr->first_tree->deSerialize(eptr->first_tree, f, lineNum);
-    
+    eptr->first_tree->deSerialize(eptr->first_tree, f);
 }
 
 void ENSEMBLE::save_model(std::string filepath)
@@ -101,6 +94,7 @@ void ENSEMBLE::save_model(std::string filepath)
     this->serialize(this, f);
     f.close();
 }
+
 void ENSEMBLE::load_model(std::string filepath)
 {
     std::ifstream f;
@@ -108,7 +102,6 @@ void ENSEMBLE::load_model(std::string filepath)
     this->deSerialize(this, f);
     f.close();
 }
-
  
 double ENSEMBLE::initial_prediction(Tvec<double> &y, std::string loss_function, Tvec<double> &w){
     
@@ -136,107 +129,148 @@ double ENSEMBLE::initial_prediction(Tvec<double> &y, std::string loss_function, 
 }
 
 
-void ENSEMBLE::train(Tvec<double> &y, Tmat<double> &X, int verbose, bool greedy_complexities, 
-                     bool force_continued_learning, Tvec<double> &w){
-    // Set init -- mean
+void verbose_output(int verbose, int iteration, int nleaves, double tr_loss, double gen_loss){
+    // Print output-information to user
+    if(verbose>0){
+        if(iteration % verbose == 0){
+            Rcpp::Rcout  <<
+                std::setprecision(4) <<
+                    "it: " << iteration << 
+                        "  |  n-leaves: " << nleaves << 
+                            "  |  tr loss: " << tr_loss <<
+                                "  |  gen loss: " << gen_loss << 
+                                    std::endl;
+        }
+    }
+}
+
+
+// Loss functions defined in Ensemble class
+double ENSEMBLE::loss(Tvec<double> &y, Tvec<double> &pred, Tvec<double> &w){
+    return loss_functions::loss(y, pred, loss_function, w, extra_param);
+}
+
+
+Tvec<double> ENSEMBLE::dloss(Tvec<double> &y, Tvec<double> &pred){
+    return loss_functions::dloss(y, pred, loss_function, extra_param);
+}
+
+
+Tvec<double> ENSEMBLE::ddloss(Tvec<double> &y, Tvec<double> &pred){
+    return loss_functions::ddloss(y, pred, loss_function, extra_param);
+}
+
+
+double ENSEMBLE::link_function(double pred_observed){
+    return loss_functions::link_function(pred_observed, loss_function);
+}
+
+
+double ENSEMBLE::inverse_link_function(double pred){
+    return loss_functions::inverse_link_function(pred, loss_function);
+}
+
+                
+void ENSEMBLE::train(
+        Tvec<double> &y, 
+        Tmat<double> &X, 
+        int verbose, 
+        bool greedy_complexities, 
+        bool force_continued_learning, // Default: False
+        Tvec<double> &w, Tvec<double> &offset // Defaults to a zero-vector
+    ){
+    using namespace std::placeholders;
+    
+    // Set initials and declare variables
     int MAXITER = nrounds;
     int n = y.size(); 
     double EPS = 1E-9;
     double expected_loss;
-    double learning_rate_set = this->learning_rate;
+    double ensemble_training_loss;
+    double ensemble_approx_training_loss;
+    double ensemble_optimism;
     Tvec<double> pred(n), g(n), h(n);
+    Tmat<double> cir_sim = cir_sim_mat(100, 100); // nsim=100, nobs=100
     
-    // MSE -- FIX FOR OTHER LOSS FUNCTIONS
-    this->initialPred = this->initial_prediction(y, loss_function, w); //y.sum()/n;
+    // Initial constant prediction: arg min l(y,constant)
+    this->initialPred = learn_initial_prediction(
+        y, 
+        offset, 
+        std::bind(&ENSEMBLE::dloss, this, _1, _2),
+        std::bind(&ENSEMBLE::ddloss, this, _1, _2),
+        std::bind(&ENSEMBLE::link_function, this, _1),
+        std::bind(&ENSEMBLE::inverse_link_function, this, _1),
+        verbose
+        );
     pred.setConstant(this->initialPred);
-    this->initial_score = loss(y, pred, loss_function, w, this); //(y - pred).squaredNorm() / n;
-    
-    // Prepare cir matrix
-    // PARAMETERS FOR CIR CONTROL: Choose nsim and nobs by user
-    // Default to nsim=100 nobs=100
-    Tmat<double> cir_sim = cir_sim_mat(100, 100);
+    pred += offset;
+    this->initial_score = loss_functions::loss(y, pred, loss_function, w, extra_param);
     
     // First tree
-    g = dloss(y, pred, loss_function, this) * w;
-    h = ddloss(y, pred, loss_function, this) * w;
-    //Rcpp::Rcout << g.array()/h.array() << std::endl;
-    
-
+    g = dloss(y, pred) * w;
+    h = ddloss(y, pred) * w;
     this->first_tree = new GBTREE;
-    this->first_tree->train(g, h, X, cir_sim, greedy_complexities, learning_rate_set);
+    this->first_tree->train(g, h, X, cir_sim, greedy_complexities, learning_rate);
     GBTREE* current_tree = this->first_tree;
     pred = pred + learning_rate * (current_tree->predict_data(X)); // POSSIBLY SCALED
-    expected_loss = (current_tree->getTreeScore()) * (-2)*learning_rate_set*(learning_rate_set/2 - 1) + 
-        learning_rate_set * current_tree->getTreeOptimism();
-        //learning_rate_set * current_tree->getFeatureMapOptimism();
-    if(verbose>0){
-        Rcpp::Rcout  <<
-            std::setprecision(4) <<
-            "it: " << 1 << 
-            "  |  n-leaves: " << current_tree->getNumLeaves() <<
-            "  |  tr loss: " << loss(y, pred, loss_function, w, this) <<
-            "  |  gen loss: " << this->estimate_generalization_loss(1) << 
-             std::endl;
-    }
+    expected_loss = tree_expected_test_reduction(current_tree, learning_rate);
+    verbose_output(
+        verbose,
+        1,
+        current_tree->getNumLeaves(),
+        loss(y, pred, w),
+        this->estimate_generalization_loss(1)
+    );
     
+    // Consecutive trees
     for(int i=2; i<(MAXITER+1); i++){
-        
-        // check for interrupt every iterations
+        // check for user-interruption at every iteration
         if (i % 1 == 0)
             Rcpp::checkUserInterrupt();
-        
-        // TRAINING
-        GBTREE* new_tree = new GBTREE();
-        g = dloss(y, pred, loss_function, this) * w;
-        h = ddloss(y, pred, loss_function, this) * w;
-        
-        // Check perfect fit
+        // Calculate gradients
+        g = dloss(y, pred) * w;
+        h = ddloss(y, pred) * w;
+        // Check for perfect fit
         if(((g.array())/h.array()).matrix().maxCoeff() < 1e-12){
             // Every perfect step is below tresh
             break;
         }
-        
-        
-        new_tree->train(g, h, X, cir_sim, greedy_complexities, learning_rate_set);
-        
-        // EXPECTED LOSS
-        expected_loss = (new_tree->getTreeScore()) * (-2)*learning_rate_set*(learning_rate_set/2 - 1) + 
-            learning_rate_set * new_tree->getTreeOptimism();
-            //1.0*learning_rate_set * new_tree->getFeatureMapOptimism();
-
-        // Update preds -- if should not be updated for last iter, it does not matter much computationally
+        // Train a new tree
+        GBTREE* new_tree = new GBTREE();
+        new_tree->train(g, h, X, cir_sim, greedy_complexities, learning_rate);
+        // Update ensemble-predictions
         pred = pred + learning_rate * (new_tree->predict_data(X));
-            
-        // iter: i | num leaves: T | iter train loss: itl | iter generalization loss: igl | mod train loss: mtl | mod gen loss: mgl "\n"
-        if(verbose>0){
-            if(i % verbose == 0){
-                Rcpp::Rcout  <<
-                    std::setprecision(4) <<
-                        "it: " << i << 
-                        "  |  n-leaves: " << new_tree->getNumLeaves() << 
-                        "  |  tr loss: " << loss(y, pred, loss_function, w, this) <<
-                        "  |  gen loss: " << this->estimate_generalization_loss(i-1) + expected_loss << 
-                        std::endl;
-                
-            }
-        }
-        
-        // Stopping criteria 
-        // Check for continued learning
+        // Calculate expected generalization loss for tree
+        expected_loss = tree_expected_test_reduction(new_tree, learning_rate);
+        // Update ensemble training loss and ensemble optimism for iteration k-1
+        ensemble_training_loss = loss_functions::loss(y, pred, loss_function, w, extra_param);
+        ensemble_approx_training_loss = this->estimate_training_loss(i-1) + 
+            new_tree->getTreeScore() * (-2)*learning_rate*(learning_rate/2 - 1);
+        ensemble_optimism = this->estimate_optimism(i-1) + 
+            learning_rate * new_tree->getTreeOptimism();
+        // Optionally output information to user
+        verbose_output(
+            verbose,
+            i,
+            new_tree->getNumLeaves(),
+            ensemble_training_loss,
+            ensemble_training_loss + ensemble_optimism + expected_loss
+        );
+        // Stopping criteria
         if(!force_continued_learning){
-            
-            // No forced learning
             // Check criterion
             if(expected_loss > EPS){
                 break;
             }
             
         }
-        
         // Passed criterion or force passed: Update ensemble
         current_tree->next_tree = new_tree;
         current_tree = new_tree;
-        
+        // Check for non-linearity
+        if(std::abs(ensemble_training_loss-ensemble_approx_training_loss)>1E-5){
+            Rcpp::stop("Error: Loss-function deviating from gradient boosting approximation. Try smaller learning_rate.");
+        }
     }
 }
 
@@ -250,18 +284,18 @@ void ENSEMBLE::train_from_preds(Tvec<double> &pred, Tvec<double> &y, Tmat<double
     Tvec<double> g(n), h(n);
     
     // Initial prediction
-    g = dloss(y, pred, loss_function, this)*w;
-    h = ddloss(y, pred, loss_function, this)*w;
+    g = loss_functions::dloss(y, pred, loss_function, extra_param)*w;
+    h = loss_functions::ddloss(y, pred, loss_function, extra_param)*w;
     this->initialPred = - g.sum() / h.sum();
     pred = pred.array() + this->initialPred;
-    this->initial_score = loss(y, pred, loss_function, w, this); //(y - pred).squaredNorm() / n;
+    this->initial_score = loss_functions::loss(y, pred, loss_function, w, extra_param); //(y - pred).squaredNorm() / n;
     
     // Prepare cir matrix
     Tmat<double> cir_sim = cir_sim_mat(100, 100);
     
     // First tree
-    g = dloss(y, pred, loss_function, this)*w;
-    h = ddloss(y, pred, loss_function, this)*w;
+    g = loss_functions::dloss(y, pred, loss_function, extra_param)*w;
+    h = loss_functions::ddloss(y, pred, loss_function, extra_param)*w;
     this->first_tree = new GBTREE;
     this->first_tree->train(g, h, X, cir_sim, greedy_complexities, learning_rate_set);
     GBTREE* current_tree = this->first_tree;
@@ -274,7 +308,7 @@ void ENSEMBLE::train_from_preds(Tvec<double> &pred, Tvec<double> &y, Tmat<double
             std::setprecision(4) <<
                 "it: " << 1 << 
                     "  |  n-leaves: " << current_tree->getNumLeaves() <<
-                        "  |  tr loss: " << loss(y, pred, loss_function, w, this) <<
+                        "  |  tr loss: " << loss_functions::loss(y, pred, loss_function, w, extra_param) <<
                             "  |  gen loss: " << this->estimate_generalization_loss(1) << 
                                 std::endl;
     }
@@ -289,8 +323,8 @@ void ENSEMBLE::train_from_preds(Tvec<double> &pred, Tvec<double> &y, Tmat<double
         
         // TRAINING
         GBTREE* new_tree = new GBTREE();
-        g = dloss(y, pred, loss_function, this)*w;
-        h = ddloss(y, pred, loss_function, this)*w;
+        g = loss_functions::dloss(y, pred, loss_function, extra_param)*w;
+        h = loss_functions::ddloss(y, pred, loss_function, extra_param)*w;
         new_tree->train(g, h, X, cir_sim, greedy_complexities, learning_rate_set);
         
         // EXPECTED LOSS
@@ -307,7 +341,7 @@ void ENSEMBLE::train_from_preds(Tvec<double> &pred, Tvec<double> &y, Tmat<double
                     std::setprecision(4) <<
                         "it: " << i << 
                             "  |  n-leaves: " << current_tree->getNumLeaves() << 
-                                "  |  tr loss: " << loss(y, pred, loss_function, w, this) <<
+                                "  |  tr loss: " << loss_functions::loss(y, pred, loss_function, w, extra_param) <<
                                     "  |  gen loss: " << this->estimate_generalization_loss(i-1) + expected_loss << 
                                         std::endl;
                 
@@ -344,10 +378,11 @@ Tvec<double> ENSEMBLE::importance(int ncols)
     return importance_vec_percent;
 }
 
-Tvec<double> ENSEMBLE::predict(Tmat<double> &X){
+Tvec<double> ENSEMBLE::predict(Tmat<double> &X, Tvec<double> &offset){
     int n = X.rows();
     Tvec<double> pred(n);
     pred.setConstant(this->initialPred);
+    pred += offset;
     GBTREE* current = this->first_tree;
     while(current != NULL){
         pred = pred + (this->learning_rate) * (current->predict_data(X));
@@ -382,14 +417,65 @@ Tvec<double> ENSEMBLE::predict2(Tmat<double> &X, int num_trees){
     return pred;
 }
 
+
+double ENSEMBLE::estimate_optimism(int num_trees){
+    // Return optimism approximated from 2'nd order GB loss-approximation
+    // And assuming no-influence / influence adjustment
+    double optimism = 0.0;
+    int tree_num = 1;
+    GBTREE* current = this->first_tree;
+    if(num_trees<1){
+        while(current != NULL){
+            optimism += current->getTreeOptimism();
+            current = current->next_tree;
+        }
+    }else{
+        while(current != NULL){
+            optimism += current->getTreeOptimism();
+            current = current->next_tree;
+            tree_num++;
+            if(tree_num > num_trees) break;
+        }
+    }
+    optimism = learning_rate * optimism;
+    return optimism;
+    
+}
+
+
+double ENSEMBLE::estimate_training_loss(int num_trees){
+    // Return training loss approximated from 2'nd order GB loss-approximation
+    double training_loss = 0.0;
+    int tree_num = 1;
+    double total_observed_reduction = 0.0;
+    GBTREE* current = this->first_tree;
+    if(num_trees<1){
+        while(current != NULL){
+            total_observed_reduction += current->getTreeScore();
+            current = current->next_tree;
+        }
+    }else{
+        while(current != NULL){
+            total_observed_reduction += current->getTreeScore();
+            current = current->next_tree;
+            tree_num++;
+            if(tree_num > num_trees) break;
+        }
+    }
+    training_loss = 
+        this->initial_score + 
+        total_observed_reduction * 
+        (-2)*learning_rate*(learning_rate/2 - 1);
+    return training_loss;
+}
+
+
 double ENSEMBLE::estimate_generalization_loss(int num_trees){
     
     int tree_num = 1;
     double total_observed_reduction = 0.0;
     double total_optimism = 0.0;
-    double learning_rate = this->learning_rate;
     GBTREE* current = this->first_tree;
-    
     if(num_trees<1){
         while(current != NULL){
             total_observed_reduction += current->getTreeScore();
@@ -405,10 +491,8 @@ double ENSEMBLE::estimate_generalization_loss(int num_trees){
             if(tree_num > num_trees) break;
         }
     }
-    //std::cout<< (this->initial_score) << std::endl;
     return (this->initial_score) + total_observed_reduction * (-2)*learning_rate*(learning_rate/2 - 1) + 
         learning_rate * total_optimism;
-    
 }
 
 int ENSEMBLE::get_num_trees(){
@@ -451,7 +535,7 @@ Tvec<double> ENSEMBLE::convergence(Tvec<double> &y, Tmat<double> &X){
     w.setOnes();
     
     // After each update (tree), compute loss
-    loss_val[0] = loss(y, pred, this->loss_function, w, this);
+    loss_val[0] = loss_functions::loss(y, pred, this->loss_function, w, extra_param);
     
     GBTREE* current = this->first_tree;
     for(int k=1; k<(K+1); k++)
@@ -460,7 +544,7 @@ Tvec<double> ENSEMBLE::convergence(Tvec<double> &y, Tmat<double> &X){
         pred = pred + (this->learning_rate) * (current->predict_data(X));
         
         // Compute loss
-        loss_val[k] = loss(y, pred, this->loss_function, w, this);
+        loss_val[k] = loss_functions::loss(y, pred, this->loss_function, w, extra_param);
         
         // Update to next tree
         current = current->next_tree;
@@ -475,6 +559,70 @@ Tvec<double> ENSEMBLE::convergence(Tvec<double> &y, Tmat<double> &X){
     return loss_val;
 }
 
+Tvec<int> ENSEMBLE::get_tree_depths(){
+    // Return vector of ints with individual tree-depths
+    int number_of_trees = this->get_num_trees();
+    Tvec<int> tree_depths(number_of_trees);
+    GBTREE* current = this->first_tree;
+    
+    for(int i=0; i<number_of_trees; i++){
+        // Check if NULL ptr
+        if(current == NULL)
+        {
+            break;
+        }
+        // get tree depth
+        tree_depths[i] = current->get_tree_depth();
+        // Update to next tree
+        current = current->next_tree;
+    }
+    return tree_depths;
+}
+
+double ENSEMBLE::get_max_node_optimism(){
+    // Return the minimum loss-reduction in ensemble
+    double max_node_optimism = 0.0;
+    double tree_max_node_optimism;
+    int number_of_trees = this->get_num_trees();
+    GBTREE* current = this->first_tree;
+    for(int i=0; i<number_of_trees; i++){
+        // Check if NULL ptr
+        if(current == NULL)
+        {
+            break;
+        }
+        // get minimum loss reduction in tree
+        tree_max_node_optimism = current->get_tree_max_optimism();
+        if(tree_max_node_optimism > max_node_optimism){
+            max_node_optimism = tree_max_node_optimism;
+        }
+        // Update to next tree
+        current = current->next_tree;
+    }
+    return max_node_optimism;
+}
+
+double ENSEMBLE::get_min_hessian_weights(){
+    double min_hess_weight = R_PosInf;
+    double tree_min_hess_weight;
+    int number_of_trees = this->get_num_trees();
+    GBTREE* current = this->first_tree;
+    for(int i=0; i<number_of_trees; i++){
+        // Check if NULL ptr
+        if(current == NULL)
+        {
+            break;
+        }
+        // get minimum loss reduction in tree
+        tree_min_hess_weight = current->get_tree_min_hess_sum();
+        if(tree_min_hess_weight < min_hess_weight){
+            min_hess_weight = tree_min_hess_weight;
+        }
+        // Update to next tree
+        current = current->next_tree;
+    }
+    return min_hess_weight;
+}
 
 // --- GBT_COUNT_AUTO ----
 void GBT_COUNT_AUTO::set_param(Rcpp::List par_list){
@@ -541,11 +689,12 @@ void GBT_COUNT_AUTO::train(Tvec<double> &y, Tmat<double> &X, int verbose, bool g
     */
     // Training
     Tvec<double> weights = Tvec<double>::Ones(n); // This is unnecessary -- CLEANUP! --> fix ENSEMBLE->train()
-    mod_pois->train(y, X, verbose, greedy_complexities, false, weights);
+    Tvec<double> offset = Tvec<double>::Zero(n);
+    mod_pois->train(y, X, verbose, greedy_complexities, false, weights, offset);
 
     // ---- 2.0 Learn overdispersion ----
     // Predictions on ynz
-    Tvec<double> y_pred_pois = mod_pois->predict(X); // log intensity  
+    Tvec<double> y_pred_pois = mod_pois->predict(X, offset); // log intensity  
     double dispersion = learn_dispersion(y, y_pred_pois);
     
     // ---- 2.1 Check dispersion -----
@@ -564,10 +713,10 @@ void GBT_COUNT_AUTO::train(Tvec<double> &y, Tmat<double> &X, int verbose, bool g
                 )
         );
          */
-        mod_nbinom->train(y, X, verbose, greedy_complexities, false, weights);
+        mod_nbinom->train(y, X, verbose, greedy_complexities, false, weights, offset);
         
         // ---- 4. Compare relative AIC of models ----
-        Tvec<double> y_pred_nbinom = mod_nbinom->predict(X); // log mean
+        Tvec<double> y_pred_nbinom = mod_nbinom->predict(X, offset); // log mean
         dispersion = learn_dispersion(y, y_pred_nbinom, dispersion);
         mod_nbinom->extra_param = dispersion;
         
@@ -611,7 +760,9 @@ void GBT_COUNT_AUTO::train(Tvec<double> &y, Tmat<double> &X, int verbose, bool g
 
 Tvec<double> GBT_COUNT_AUTO::predict(Tmat<double> &X)
 {
-    return this->count_mod->predict(X);
+    int n = X.rows();
+    Tvec<double> offset = Tvec<double>::Zero(n);
+    return this->count_mod->predict(X, offset);
 }
 
 
@@ -640,6 +791,10 @@ RCPP_MODULE(aGTBModule) {
         .method("load_model", &ENSEMBLE::load_model)
         .method("importance", &ENSEMBLE::importance)
         .method("convergence", &ENSEMBLE::convergence)
+        // get for complexity methods
+        .method("get_tree_depths", &ENSEMBLE::get_tree_depths)
+        .method("get_max_node_optimism", &ENSEMBLE::get_max_node_optimism)
+        .method("get_min_hessian_weights", &ENSEMBLE::get_min_hessian_weights)
     ;
     
     class_<GBT_COUNT_AUTO>("GBT_COUNT_AUTO")
