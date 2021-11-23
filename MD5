@@ -1,4 +1,4 @@
-04ca3869cfc31a4d065188a067d381a3 *DESCRIPTION
+f3fe4f9afc9280731665059043a52981 *DESCRIPTION
 db256facd53387ff4675d454a2ff0fcc *NAMESPACE
 2e59f97816f9eee295d46c43b35d826f *NEWS.md
 5d4f4180d4a202c4f4c64ab1ddb6008e *R/agtboost-package.R
@@ -46,7 +46,7 @@ ec6d7ef33084c8ea6529ea1588d2347f *man/gbt.ksval.Rd
 5f340be6d50d5890e8c48bff9bd161df *man/gbt.train.Rd
 62f9bd8bfd7f5981f7ed19a675ed2976 *man/predict.Rcpp_ENSEMBLE.Rd
 3a53ae4bb84df122ea368ca736723aae *man/predict.Rcpp_GBT_COUNT_AUTO.Rd
-f262ee58ebd23c3ed38a3d751ff54f46 *src/Makevars
+3e892bae434ec40132620fe9fb819a29 *src/Makevars
 c8ccc2bd354d2fc4ab7f6456194348e2 *src/Makevars.win
 51a65fb7f569615dfd68a75d6cfd9cbb *src/RcppExports.cpp
 dd78493ead87aa399e91f6e7ab2d5bc5 *src/agtboost.cpp
